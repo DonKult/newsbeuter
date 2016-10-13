@@ -1,16 +1,16 @@
 #include "catch.hpp"
+#include "test-helpers.h"
 
 #include <cache.h>
 #include <configcontainer.h>
 #include <rss_parser.h>
 
-#include <unistd.h>
-
 using namespace newsbeuter;
 
 TEST_CASE("cache behaves correctly") {
+	TestHelpers::TempFile dbfile;
 	configcontainer * cfg = new configcontainer();
-	cache * rsscache = new cache("test-cache.db", cfg);
+	cache * rsscache = new cache(dbfile.getPath(), cfg);
 	rss_parser parser("file://data/rss.xml", rsscache, cfg, nullptr);
 	std::shared_ptr<rss_feed> feed = parser.parse();
 	REQUIRE(feed->total_item_count() == 8);
@@ -39,17 +39,16 @@ TEST_CASE("cache behaves correctly") {
 
 	delete rsscache;
 	delete cfg;
-
-	::unlink("test-cache.db");
 }
 
 TEST_CASE("Cleaning old articles works") {
 	/* Populating the cache file with some items. */
 	configcontainer * cfg = nullptr;
 	cache * rsscache = nullptr;
+	TestHelpers::TempFile dbfile;
 
 	cfg = new configcontainer();
-	rsscache = new cache("test-cache.db", cfg);
+	rsscache = new cache(dbfile.getPath(), cfg);
 	rss_parser * parser = new rss_parser(
 			"file://data/rss.xml", rsscache, cfg, nullptr);
 	std::shared_ptr<rss_feed> feed = parser->parse();
@@ -81,7 +80,7 @@ TEST_CASE("Cleaning old articles works") {
 	 * are dating back to 2006. */
 	cfg = new configcontainer();
 	cfg->set_configvalue("keep-articles-days", "42");
-	rsscache = new cache("test-cache.db", cfg);
+	rsscache = new cache(dbfile.getPath(), cfg);
 	rss_ignores * ign = new rss_ignores();
 	feed = rsscache->internalize_rssfeed("file://data/rss.xml", ign);
 
@@ -92,5 +91,44 @@ TEST_CASE("Cleaning old articles works") {
 	delete ign;
 	delete rsscache;
 	delete cfg;
-	::unlink("test-cache.db");
+}
+
+TEST_CASE("Last-Modified and ETag values are preserved correctly") {
+	configcontainer * cfg = new configcontainer();
+	cache * rsscache = new cache(":memory:", cfg);
+	const auto feedurl = "file://data/rss.xml";
+	rss_parser parser(feedurl, rsscache, cfg, nullptr);
+	std::shared_ptr<rss_feed> feed = parser.parse();
+	rsscache->externalize_rssfeed(feed, false);
+
+	/* We will run this lambda on different inputs to check different
+	 * situations. */
+	auto test = [&](const time_t& lm_value, const std::string& etag_value) {
+		time_t last_modified = lm_value;
+		std::string etag = etag_value;
+
+		rsscache->update_lastmodified(feedurl, last_modified, etag);
+		/* Scrambling the value to make sure the following call changes it. */
+		last_modified = 42;
+		etag = "42";
+		rsscache->fetch_lastmodified(feedurl, last_modified, etag);
+
+		REQUIRE(last_modified == lm_value);
+		REQUIRE(etag == etag_value);
+	};
+
+	SECTION("Only Last-Modified header was returned") {
+		test(1476382350, "");
+	}
+
+	SECTION("Only ETag header was returned") {
+		test(0, "1234567890");
+	}
+
+	SECTION("Both Last-Modified and ETag headers were returned") {
+		test(1476382350, "1234567890");
+	}
+
+	delete rsscache;
+	delete cfg;
 }
