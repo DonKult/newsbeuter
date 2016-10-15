@@ -218,3 +218,63 @@ TEST_CASE("catchup_all marks all items read") {
 	delete rsscache;
 	delete cfg;
 }
+
+TEST_CASE("cleanup_cache behaves as expected") {
+	TestHelpers::TempFile dbfile;
+
+	std::vector<std::string> feedurls = {
+		"file://data/rss.xml",
+		"file://data/atom10_1.xml"
+	};
+
+	std::vector<std::shared_ptr<rss_feed>> feeds;
+	rss_ignores * ign = new rss_ignores();
+	configcontainer * cfg = new configcontainer();
+	cache * rsscache = new cache(dbfile.getPath(), cfg);
+	for (const auto& url : feedurls) {
+		rss_parser parser(url, rsscache, cfg, nullptr);
+		std::shared_ptr<rss_feed> feed = parser.parse();
+		feeds.push_back(feed);
+		rsscache->externalize_rssfeed(feed, false);
+	}
+
+	SECTION("cleanup-on-quit set to \"no\"") {
+		cfg->set_configvalue("cleanup-on-quit", "no");
+		rsscache->cleanup_cache(feeds);
+
+		delete rsscache;
+		delete cfg;
+
+		cfg = new configcontainer();
+		rsscache = new cache(dbfile.getPath(), cfg);
+
+		for (const auto& url : feedurls) {
+			std::shared_ptr<rss_feed> feed =
+				rsscache->internalize_rssfeed(url, ign);
+			REQUIRE(feed->total_item_count() != 0);
+		}
+	}
+
+	SECTION("cleanup-on-quit set to \"yes\"") {
+		cfg->set_configvalue("cleanup-on-quit", "yes");
+		/* Drop first feed; it should now be removed from the cache, too. */
+		feeds.erase(feeds.cbegin(), feeds.cbegin()+1);
+		rsscache->cleanup_cache(feeds);
+
+		delete rsscache;
+		delete cfg;
+
+		cfg = new configcontainer();
+		rsscache = new cache(dbfile.getPath(), cfg);
+
+		std::shared_ptr<rss_feed> feed =
+			rsscache->internalize_rssfeed(feedurls[0], ign);
+		REQUIRE(feed->total_item_count() == 0);
+		feed = rsscache->internalize_rssfeed(feedurls[1], ign);
+		REQUIRE(feed->total_item_count() != 0);
+	}
+
+	delete ign;
+	delete rsscache;
+	delete cfg;
+}
